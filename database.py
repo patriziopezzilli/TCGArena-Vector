@@ -36,7 +36,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS card_embeddings (
             card_id BIGINT PRIMARY KEY,
             embedding vector(1280),
-            FOREIGN KEY (card_id) REFERENCES card_template(id) ON DELETE CASCADE
+            FOREIGN KEY (card_id) REFERENCES card_templates(id) ON DELETE CASCADE
         );
     """)
     
