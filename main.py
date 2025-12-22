@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from pydantic import BaseModel
+from typing import List
 import uvicorn
 from vectorizer import CardVectorizer
 from database import get_db_connection, init_db
