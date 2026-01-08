@@ -46,21 +46,43 @@ async def search_card(file: UploadFile = File(...)):
     
     # Perform Nearest Neighbor Search using L2 distance (Euclidean)
     # The <-> operator is provided by pgvector for L2 distance
+    # Increased from LIMIT 5 to LIMIT 20 for better recall
     cur.execute("""
         SELECT card_id, (embedding <-> %s::vector) as distance
         FROM card_embeddings
         ORDER BY distance ASC
-        LIMIT 5;
+        LIMIT 20;
     """, (query_vector,))
-    
+
     results = cur.fetchall()
     cur.close()
     conn.close()
-    
-    # Convert distance to a "confidence" score (approximate)
-    # Lower distance = higher confidence.
+
+    # Convert L2 distance to confidence percentage
+    # L2 distance typically ranges from 0 (perfect match) to ~15+ (very different)
+    # We map this to 0-100% confidence scale
+    def distance_to_confidence(distance: float) -> float:
+        """
+        Converts L2 distance to confidence percentage (0-100)
+
+        Distance 0    → 100% confidence (perfect match)
+        Distance 5    → ~67% confidence (good match)
+        Distance 10   → ~33% confidence (poor match)
+        Distance 15+  → ~0% confidence (no match)
+        """
+        # Clamp distance to reasonable range
+        clamped = max(0.0, min(distance, 15.0))
+
+        # Invert and normalize to 0-100 scale
+        confidence = ((15.0 - clamped) / 15.0) * 100.0
+
+        return round(confidence, 2)
+
     return [
-        {"card_id": row[0], "confidence": float(row[1])} 
+        {
+            "card_id": row[0],
+            "confidence": distance_to_confidence(float(row[1]))
+        }
         for row in results
     ]
 

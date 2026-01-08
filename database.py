@@ -36,13 +36,35 @@ def init_db():
         CREATE TABLE IF NOT EXISTS card_embeddings (
             card_id BIGINT PRIMARY KEY,
             embedding vector(1280),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            model_version VARCHAR(50) DEFAULT 'mobilenetv3_v1',
             FOREIGN KEY (card_id) REFERENCES card_templates(id) ON DELETE CASCADE
         );
     """)
-    
-    # Create index for faster search (IVFFlat) - Optional, requires some data first normally
-    # cur.execute("CREATE INDEX IF NOT EXISTS idx_card_embeddings ON card_embeddings USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);")
-    
+
+    # Create index for faster search (IVFFlat)
+    # Note: IVFFlat index should be created AFTER data is loaded for better performance
+    # Increase 'lists' parameter as dataset grows (rule of thumb: sqrt(total_rows))
+    # For now using 100 lists, increase to 500-1000 when you have 100k+ cards
+    try:
+        # Check if we have enough data for index (at least 1000 rows recommended)
+        cur.execute("SELECT COUNT(*) FROM card_embeddings")
+        count = cur.fetchone()[0]
+
+        if count >= 100:  # Minimum threshold for index
+            print(f"Creating IVFFlat index for {count} embeddings...")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_card_embeddings_ivfflat
+                ON card_embeddings
+                USING ivfflat (embedding vector_l2_ops)
+                WITH (lists = 100);
+            """)
+            print("✅ IVFFlat index created successfully")
+        else:
+            print(f"⚠️ Only {count} embeddings - skipping index creation (need 100+ for optimal performance)")
+    except Exception as e:
+        print(f"⚠️ Could not create index (this is normal if table is empty): {e}")
+
     conn.commit()
     cur.close()
     conn.close()
