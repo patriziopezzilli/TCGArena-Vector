@@ -17,18 +17,64 @@ class SearchResult(BaseModel):
     card_id: int
     confidence: float
 
+class ReindexRequest(BaseModel):
+    force_reindex: bool = False
+
 @app.on_event("startup")
 def startup_event():
     init_db()
 
-@app.post("/vectorize/sync")
-async def trigger_sync(background_tasks: BackgroundTasks):
+@app.post("/reindex")
+async def reindex_embeddings(request: ReindexRequest, background_tasks: BackgroundTasks):
     """
-    Triggers a background task to scan the image folder and generate vectors 
-    for images that haven't been indexed yet.
+    Re-index all embeddings with normalized vectors and updated model.
+    This is needed after switching to cosine similarity.
     """
-    background_tasks.add_task(process_batch_images)
-    return {"message": "Sync started in background"}
+    background_tasks.add_task(reindex_all_embeddings, request.force_reindex)
+    return {"message": "Re-indexing started in background"}
+
+def reindex_all_embeddings(force: bool = False):
+    """
+    Re-process all existing embeddings with normalization and update model_version.
+    """
+    print("Starting re-indexing process...")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Get all existing embeddings
+    cur.execute("SELECT card_id, embedding FROM card_embeddings")
+    rows = cur.fetchall()
+    
+    updated_count = 0
+    for card_id, embedding_bytes in rows:
+        # Convert bytes back to list (pgvector stores as bytes)
+        embedding_list = list(embedding_bytes)
+        
+        # Normalize the vector
+        import numpy as np
+        embedding_array = np.array(embedding_list)
+        normalized = embedding_array / np.linalg.norm(embedding_array)
+        normalized_list = normalized.tolist()
+        
+        # Update in database
+        cur.execute("""
+            UPDATE card_embeddings 
+            SET embedding = %s::vector, model_version = 'mobilenetv3_v1_normalized'
+            WHERE card_id = %s
+        """, (normalized_list, card_id))
+        
+        updated_count += 1
+        if updated_count % 100 == 0:
+            print(f"Re-indexed {updated_count} embeddings...")
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    print(f"✅ Re-indexing complete: {updated_count} embeddings normalized")
+    
+    # Re-create index with cosine operator
+    init_db()
 
 @app.post("/search", response_model=List[SearchResult])
 async def search_card(file: UploadFile = File(...)):
@@ -44,13 +90,14 @@ async def search_card(file: UploadFile = File(...)):
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # Perform Nearest Neighbor Search using L2 distance (Euclidean)
-    # The <-> operator is provided by pgvector for L2 distance
+    # Perform Nearest Neighbor Search using Cosine Similarity (better for embeddings)
+    # The <=> operator is provided by pgvector for Cosine distance (1 - cosine similarity)
+    # Cosine similarity is better than L2 for normalized embeddings
     # Increased from LIMIT 5 to LIMIT 20 for better recall
     cur.execute("""
-        SELECT card_id, (embedding <-> %s::vector) as distance
+        SELECT card_id, (1 - (embedding <=> %s::vector)) as cosine_similarity
         FROM card_embeddings
-        ORDER BY distance ASC
+        ORDER BY cosine_similarity DESC
         LIMIT 20;
     """, (query_vector,))
 
@@ -58,30 +105,30 @@ async def search_card(file: UploadFile = File(...)):
     cur.close()
     conn.close()
 
-    # Convert L2 distance to confidence percentage
-    # L2 distance typically ranges from 0 (perfect match) to ~15+ (very different)
-    # We map this to 0-100% confidence scale
-    def distance_to_confidence(distance: float) -> float:
+    # Convert Cosine Similarity to confidence percentage
+    # Cosine similarity ranges from -1 (opposite) to 1 (identical)
+    # For normalized embeddings, typically 0.0 to 1.0 (1.0 = perfect match)
+    def similarity_to_confidence(similarity: float) -> float:
         """
-        Converts L2 distance to confidence percentage (0-100)
+        Converts cosine similarity to confidence percentage (0-100)
 
-        Distance 0    → 100% confidence (perfect match)
-        Distance 5    → ~67% confidence (good match)
-        Distance 10   → ~33% confidence (poor match)
-        Distance 15+  → ~0% confidence (no match)
+        Similarity 1.0  → 100% confidence (perfect match)
+        Similarity 0.8  → 80% confidence (good match)
+        Similarity 0.5  → 50% confidence (moderate match)
+        Similarity 0.0  → 0% confidence (no match)
         """
-        # Clamp distance to reasonable range
-        clamped = max(0.0, min(distance, 15.0))
+        # Clamp similarity to 0-1 range (normalized embeddings)
+        clamped = max(0.0, min(similarity, 1.0))
 
-        # Invert and normalize to 0-100 scale
-        confidence = ((15.0 - clamped) / 15.0) * 100.0
+        # Convert to percentage
+        confidence = clamped * 100.0
 
         return round(confidence, 2)
 
     return [
         {
             "card_id": row[0],
-            "confidence": distance_to_confidence(float(row[1]))
+            "confidence": similarity_to_confidence(float(row[1]))
         }
         for row in results
     ]

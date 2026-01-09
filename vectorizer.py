@@ -7,17 +7,17 @@ import io
 class CardVectorizer:
     def __init__(self):
         # Load pre-trained MobileNetV3 Large
-        # We use "DEFAULT" weights (best available)
         self.weights = MobileNet_V3_Large_Weights.DEFAULT
         self.model = mobilenet_v3_large(weights=self.weights)
         
+        # Try to load fine-tuned weights if available
+        try:
+            self.model.load_state_dict(torch.load('mobilenetv3_tcg_finetuned.pth', map_location='cpu'))
+            print("✅ Loaded fine-tuned TCG model")
+        except FileNotFoundError:
+            print("ℹ️ Using base MobileNetV3 model (no fine-tuning found)")
+        
         # Remove the classification layer to get raw embeddings (1280 dim)
-        # MobileNetV3 classifier structure: Sequential(Linear, Hardswish, Dropout, Linear)
-        # We want the output of the penultimate layer or adjust the classifier.
-        # A common trick: Replace the last fully connected layer with Identity or just grab the features.
-        # MobileNetV3 structure ends with a 'classifier' block.
-        # We will modify the classifier to output the 1280 features directly.
-        # The last layer is Linear(in=1280, out=1000). We can replace it.
         self.model.classifier[3] = torch.nn.Identity()
         
         self.model.eval() # Set to evaluation mode
@@ -44,6 +44,9 @@ class CardVectorizer:
             
             with torch.no_grad():
                 features = self.model(batch)
+            
+            # Normalize the embedding vector (L2 normalization for cosine similarity)
+            features = torch.nn.functional.normalize(features, p=2, dim=1)
             
             # Flatten and convert to list
             return features.squeeze().tolist()

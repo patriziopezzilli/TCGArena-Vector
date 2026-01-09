@@ -37,7 +37,7 @@ def init_db():
             card_id BIGINT PRIMARY KEY,
             embedding vector(1280),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            model_version VARCHAR(50) DEFAULT 'mobilenetv3_v1',
+            model_version VARCHAR(50) DEFAULT 'mobilenetv3_finetuned_v1',
             FOREIGN KEY (card_id) REFERENCES card_templates(id) ON DELETE CASCADE
         );
     """)
