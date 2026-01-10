@@ -33,6 +33,15 @@ async def reindex_embeddings(request: ReindexRequest, background_tasks: Backgrou
     background_tasks.add_task(reindex_all_embeddings, request.force_reindex)
     return {"message": "Re-indexing started in background"}
 
+@app.post("/vectorize/sync")
+async def trigger_sync(background_tasks: BackgroundTasks):
+    """
+    Triggers a background task to scan the image folder and generate vectors 
+    for images that haven't been indexed yet.
+    """
+    background_tasks.add_task(process_batch_images)
+    return {"message": "Sync started in background"}
+
 def reindex_all_embeddings(force: bool = False):
     """
     Re-process all existing embeddings with normalization and update model_version.
@@ -172,6 +181,66 @@ def process_batch_images():
                 cur.execute(
                     "INSERT INTO card_embeddings (card_id, embedding) VALUES (%s, %s)",
                     (card_id, vector)
+                )
+                conn.commit()
+                processed_count += 1
+                
+                if processed_count % 100 == 0:
+                    print(f"Indexed {processed_count} new images...")
+                    
+        except Exception as e:
+            print(f"Error processing {img_path}: {e}")
+            conn.rollback()
+            
+    cur.close()
+    conn.close()
+    print(f"Indexing completed. Added {processed_count} new vectors.")
+
+def process_batch_images():
+    """
+    Iterates through local images, checks if they are in DB, 
+    and inserts embeddings if missing.
+    """
+    print("Starting vector indexing process...")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Get all processed card_ids to skip
+    cur.execute("SELECT card_id FROM card_embeddings")
+    existing_ids = set(row[0] for row in cur.fetchall())
+    
+    # Find all jpg files
+    image_files = glob.glob(os.path.join(IMAGE_STORAGE_PATH, "*.jpg"))
+    print(f"Found {len(image_files)} images in storage.")
+    
+    processed_count = 0
+    for img_path in image_files:
+        try:
+            # Filename is "{id}.jpg", so we extract the ID
+            basename = os.path.basename(img_path)
+            card_id_str = os.path.splitext(basename)[0]
+            
+            if not card_id_str.isdigit():
+                continue
+                
+            card_id = int(card_id_str)
+            
+            if card_id in existing_ids:
+                continue
+            
+            # Generate Vector
+            vector = vectorizer.vectorize_image(img_path)
+            if vector:
+                # Normalize the embedding for cosine similarity
+                import numpy as np
+                embedding_array = np.array(vector)
+                normalized = embedding_array / np.linalg.norm(embedding_array)
+                normalized_list = normalized.tolist()
+                
+                # Save to DB with model version
+                cur.execute(
+                    "INSERT INTO card_embeddings (card_id, embedding, model_version) VALUES (%s, %s, %s)",
+                    (card_id, normalized_list, 'mobilenetv3_finetuned_v1')
                 )
                 conn.commit()
                 processed_count += 1
